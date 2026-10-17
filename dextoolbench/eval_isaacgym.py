@@ -514,28 +514,29 @@ class EvalArgs:
     """Z offset added to start pose to avoid the table."""
 
 
-TABLE_URDF = "urdf/table_narrow.urdf"
-TABLE_WHITEBOARD_URDF = "urdf/table_narrow_whiteboard.urdf"
-TABLE_NAIL_URDF = "urdf/table_narrow_nail.urdf"
-TABLE_BOWL_PLATE_URDF = "urdf/table_narrow_bowl_plate.urdf"
-
-OBJECT_CATEGORY_TO_TABLE_URDF = {
-    "hammer": TABLE_NAIL_URDF,
-    "spatula": TABLE_BOWL_PLATE_URDF,
-    "eraser": TABLE_WHITEBOARD_URDF,
-    "screwdriver": TABLE_URDF,
-    "marker": TABLE_WHITEBOARD_URDF,
-    "brush": TABLE_URDF,
-}
+from dextoolbench.table_lookup import (
+    TABLE_URDF,
+    TABLE_WHITEBOARD_URDF,
+    TABLE_NAIL_URDF,
+    TABLE_BOWL_PLATE_URDF,
+    TABLE_CLUTTER_URDF,
+    OBJECT_CATEGORY_TO_TABLE_URDF,
+    OBJECT_CATEGORY_TASK_TO_TABLE_URDF,
+    select_table_urdf,
+)
 
 
 def main():
     args: EvalArgs = tyro.cli(EvalArgs)
 
-    if args.force_table_urdf:
-        selected_table_urdf = TABLE_URDF
-    else:
-        selected_table_urdf = OBJECT_CATEGORY_TO_TABLE_URDF[args.object_category]
+    if args.force_table_urdf and args.task_name == "clutter":
+        log_warn(
+            "force_table_urdf=True: using plain table — clutter blocks will NOT appear. "
+            "Pass --force_table_urdf False to use the clutter table URDF."
+        )
+    selected_table_urdf = select_table_urdf(
+        args.object_category, args.task_name, force_default=args.force_table_urdf
+    )
 
     # Load trajectory
     trajectory_path = (
