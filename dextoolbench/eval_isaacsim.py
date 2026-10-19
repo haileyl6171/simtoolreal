@@ -61,6 +61,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--force_table_urdf", action=argparse.BooleanOptionalAction,
                         default=True,
                         help="Always use the default table URDF regardless of category.")
+    parser.add_argument("--robot_reset_noise", action=argparse.BooleanOptionalAction,
+                        default=False,
+                        help="Keep the training-time robot joint pos/vel reset noise so "
+                             "episodes differ (object start pose and goals stay fixed).")
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--rl_device", default="cuda")
     return parser
 
@@ -96,7 +101,10 @@ def main() -> None:
     import torch
 
     import isaacsimenvs  # noqa: F401  registers gym envs
-    from isaacsimenvs.tasks.simtoolreal.simtoolreal_env_cfg import SimToolRealEnvCfg
+    from isaacsimenvs.tasks.simtoolreal.simtoolreal_env_cfg import (
+        SimToolRealEnvCfg,
+        obstacle_cfgs_from_trajectory,
+    )
     from deployment.rl_player import RlPlayer
     from dextoolbench.objects import NAME_TO_OBJECT
 
@@ -127,14 +135,17 @@ def main() -> None:
     cfg.assets.object_urdf = str(obj.decomposed_urdf_path)
     cfg.assets.object_scale = tuple(obj.scale)
     cfg.assets.table_urdf = table_urdf
+    cfg.assets.obstacles = obstacle_cfgs_from_trajectory(traj_data)
 
     rs = cfg.reset
     rs.reset_position_noise_x = 0.0
     rs.reset_position_noise_y = 0.0
     rs.reset_position_noise_z = 0.0
-    rs.reset_dof_pos_random_interval_arm = 0.0
-    rs.reset_dof_pos_random_interval_fingers = 0.0
-    rs.reset_dof_vel_random_interval = 0.0
+    if not args.robot_reset_noise:
+        rs.reset_dof_pos_random_interval_arm = 0.0
+        rs.reset_dof_pos_random_interval_fingers = 0.0
+        rs.reset_dof_vel_random_interval = 0.0
+    cfg.seed = args.seed
     rs.table_reset_z = 0.38
     rs.table_reset_z_range = 0.0
     rs.start_arm_higher = True

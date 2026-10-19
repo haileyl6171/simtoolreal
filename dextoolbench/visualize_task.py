@@ -56,6 +56,7 @@ class TaskVisualizer:
         self.server = viser.ViserServer(host="0.0.0.0", port=port)
         self.start_pose = np.array(trajectory_data["start_pose"])
         self.goals = [np.array(g) for g in trajectory_data["goals"]]
+        self.obstacles = trajectory_data.get("obstacles", [])
         self._setup_scene(object_name, table_urdf)
 
     def _setup_scene(self, object_name, table_urdf: Path):
@@ -95,6 +96,17 @@ class TaskVisualizer:
             root_node_name="/goal",
             mesh_color_override=(0, 255, 0, 0.5),
         )
+
+        # Free-standing obstacles, drawn at their start pose.
+        for i, ob in enumerate(self.obstacles):
+            half = np.deg2rad(ob.get("yaw_deg", 0.0)) / 2
+            self.server.scene.add_box(
+                f"/obstacle_{i}",
+                dimensions=tuple(ob["size"]),
+                position=tuple(ob["pos"]),
+                wxyz=(np.cos(half), 0.0, 0.0, np.sin(half)),
+                color=tuple(int(255 * c) for c in ob.get("color", (0.35, 0.35, 0.45))),
+            )
 
         self.server.gui.add_markdown(f"**{object_name}** - {len(self.goals)} goals")
         self.slider = self.server.gui.add_slider(

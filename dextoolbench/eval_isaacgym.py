@@ -519,7 +519,6 @@ from dextoolbench.table_lookup import (
     TABLE_WHITEBOARD_URDF,
     TABLE_NAIL_URDF,
     TABLE_BOWL_PLATE_URDF,
-    TABLE_CLUTTER_URDF,
     OBJECT_CATEGORY_TO_TABLE_URDF,
     OBJECT_CATEGORY_TASK_TO_TABLE_URDF,
     select_table_urdf,
@@ -529,11 +528,6 @@ from dextoolbench.table_lookup import (
 def main():
     args: EvalArgs = tyro.cli(EvalArgs)
 
-    if args.force_table_urdf and args.task_name == "clutter":
-        log_warn(
-            "force_table_urdf=True: using plain table — clutter blocks will NOT appear. "
-            "Pass --force_table_urdf False to use the clutter table URDF."
-        )
     selected_table_urdf = select_table_urdf(
         args.object_category, args.task_name, force_default=args.force_table_urdf
     )
@@ -549,6 +543,12 @@ def main():
     assert trajectory_path.exists(), f"Trajectory file not found: {trajectory_path}"
     with open(trajectory_path) as f:
         traj_data = json.load(f)
+
+    if traj_data.get("obstacles"):
+        log_warn(
+            "This task has free-standing obstacles, which only the Isaac Sim "
+            "backend simulates (eval_isaacsim.py); they are ignored here."
+        )
 
     # Raise the start pose by z_offset to avoid the table
     traj_data["start_pose"][2] += args.z_offset

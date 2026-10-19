@@ -4,7 +4,6 @@ TABLE_URDF = "urdf/table_narrow.urdf"
 TABLE_WHITEBOARD_URDF = "urdf/table_narrow_whiteboard.urdf"
 TABLE_NAIL_URDF = "urdf/table_narrow_nail.urdf"
 TABLE_BOWL_PLATE_URDF = "urdf/table_narrow_bowl_plate.urdf"
-TABLE_CLUTTER_URDF = "urdf/table_narrow_clutter.urdf"
 
 OBJECT_CATEGORY_TO_TABLE_URDF = {
     "hammer": TABLE_NAIL_URDF,
@@ -16,8 +15,12 @@ OBJECT_CATEGORY_TO_TABLE_URDF = {
 }
 
 # Task-specific overrides (keyed by (object_category, task_name)).
+# Pick-and-place uses the plain table; its obstacle is a separate rigid body.
 OBJECT_CATEGORY_TASK_TO_TABLE_URDF = {
-    ("eraser", "clutter"): TABLE_CLUTTER_URDF,
+    ("eraser", "pick_place"): TABLE_URDF,
+    ("eraser", "pick_place_obstacle"): TABLE_URDF,
+    ("eraser", "pick_place_obstacle_2goal"): TABLE_URDF,
+    ("eraser", "pick_place_obstacle_1goal"): TABLE_URDF,
 }
 
 

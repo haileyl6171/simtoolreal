@@ -268,6 +268,28 @@ def _reset_table_pose(env, env_ids: torch.Tensor) -> None:
     pose = torch.cat([pos_local + env_origins, quat], dim=-1)
     env.table.write_root_pose_to_sim(pose, env_ids=env_ids)
 
+
+def _reset_obstacle_poses(env, env_ids: torch.Tensor) -> None:
+    """Put each free-standing obstacle back at its start pose, at rest on the table."""
+    from .scene_utils import yaw_quat_wxyz
+
+    n = env_ids.numel()
+    env_origins = env.scene.env_origins[env_ids]
+    table_dz = env._table_z_per_env[env_ids] - env.cfg.reset.table_reset_z
+    for obstacle, ob in zip(env.obstacles, env.cfg.assets.obstacles):
+        pos_local = torch.tensor(ob.pos, device=env.device, dtype=torch.float32).repeat(n, 1)
+        pos_local[:, 2] += table_dz
+        quat = torch.tensor(
+            yaw_quat_wxyz(ob.yaw_deg), device=env.device, dtype=torch.float32
+        ).repeat(n, 1)
+        obstacle.write_root_pose_to_sim(
+            torch.cat([pos_local + env_origins, quat], dim=-1), env_ids=env_ids
+        )
+        obstacle.write_root_velocity_to_sim(
+            torch.zeros(n, 6, device=env.device), env_ids=env_ids
+        )
+
+
 def _reset_object_pose(env, env_ids: torch.Tensor) -> None:
     """Reset object pose and lifted-reward reference height."""
     cfg = env.cfg.reset
@@ -387,6 +409,7 @@ def reset_env_state(env, env_ids: torch.Tensor) -> None:
 
     _randomize_robot_dof_state(env, env_ids)
     _reset_table_pose(env, env_ids)
+    _reset_obstacle_poses(env, env_ids)
     _reset_object_pose(env, env_ids)
     _reset_goal_pose(env, env_ids, mode="absolute")  # full reset → always absolute
 

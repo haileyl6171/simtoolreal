@@ -51,7 +51,8 @@ def _sim_get_state(inner, obs):
         xyzw = wxyz[[1, 2, 3, 0]]
         return np.concatenate([pos, xyzw]).astype(np.float32)
 
-    return joint_pos, _pose7(inner.object), _pose7(inner.goal_viz)
+    obstacle_poses = [_pose7(o) for o in getattr(inner, "obstacles", [])]
+    return joint_pos, _pose7(inner.object), _pose7(inner.goal_viz), obstacle_poses
 
 
 def _sim_episode(conn, env, inner, player, n_act, n_goals, rl_device):
@@ -122,7 +123,10 @@ def sim_worker_isaacsim(conn, category, object_name, task_name, table_urdf,
         import torch
 
         import isaacsimenvs  # noqa: F401  registers gym envs
-        from isaacsimenvs.tasks.simtoolreal.simtoolreal_env_cfg import SimToolRealEnvCfg
+        from isaacsimenvs.tasks.simtoolreal.simtoolreal_env_cfg import (
+            SimToolRealEnvCfg,
+            obstacle_cfgs_from_trajectory,
+        )
         from deployment.rl_player import RlPlayer
         from dextoolbench.objects import NAME_TO_OBJECT
 
@@ -148,6 +152,7 @@ def sim_worker_isaacsim(conn, category, object_name, task_name, table_urdf,
         cfg.assets.object_scale = tuple(obj.scale)
         # table_urdf arrives relative to assets/ (gym convention).
         cfg.assets.table_urdf = str(REPO_ROOT / "assets" / table_urdf)
+        cfg.assets.obstacles = obstacle_cfgs_from_trajectory(traj_data)
 
         rs = cfg.reset
         rs.reset_position_noise_x = 0.0
@@ -178,6 +183,9 @@ def sim_worker_isaacsim(conn, category, object_name, task_name, table_urdf,
         term.eval_success_tolerance = 0.01
         term.success_steps = 1
         term.max_consecutive_successes = n_goals
+        # Quadruple the per-goal timeout (the counter resets on each goal hit).
+        cfg.episode_length_s *= 4
+        term.episode_length *= 4
 
         env = gym.make("Isaacsimenvs-SimToolReal-Direct-v0", cfg=cfg)
         inner = env.unwrapped

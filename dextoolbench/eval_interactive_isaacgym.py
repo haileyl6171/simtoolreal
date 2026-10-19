@@ -16,6 +16,7 @@ Usage:
 """
 
 import argparse
+import json
 import multiprocessing
 import time
 import traceback
@@ -370,6 +371,8 @@ class InteractiveDemo:
         self._dyn = []  # type: list
         self._obj_frame = None
         self._goal_frame = None
+        self._obstacle_boxes = []  # type: list
+        self._pending_obstacles = []  # type: list
 
         self._build_gui()
         self._setup_static_scene()
@@ -517,6 +520,7 @@ class InteractiveDemo:
                 pass
         self._dyn.clear()
         self._obj_frame = self._goal_frame = None
+        self._obstacle_boxes = []
 
     def _add_box(self, name, dimensions, position, color, opacity=None):
         """Add a coloured box to the viser scene and track it in _dyn."""
@@ -613,6 +617,16 @@ class InteractiveDemo:
         ViserUrdf(self.server, obj_urdf, root_node_name="/goal",
                   mesh_color_override=(0, 255, 0, 0.5))
 
+        # Free-standing obstacles: drawn at their start pose, moved by worker state.
+        for i, ob in enumerate(self._pending_obstacles):
+            half = np.deg2rad(ob.get("yaw_deg", 0.0)) / 2
+            box = self._add_box(
+                f"/obstacle_{i}", tuple(ob["size"]), tuple(ob["pos"]),
+                color=tuple(int(255 * c) for c in ob.get("color", (0.35, 0.35, 0.45))),
+            )
+            box.wxyz = (np.cos(half), 0.0, 0.0, np.sin(half))
+            self._obstacle_boxes.append(box)
+
     # ── Subprocess management ──────────────────────────────────
 
     def _kill_subprocess(self):
@@ -646,12 +660,19 @@ class InteractiveDemo:
         table_urdf_abs = _get_task_table_urdf_abs(cat_key, object_name, task_name)
 
         self._pending_obj_name = object_name
+        traj_path = REPO_ROOT / "dextoolbench" / "trajectories" / cat_key / object_name / (task_name + ".json")
+        with open(traj_path) as f:
+            self._pending_obstacles = json.load(f).get("obstacles", [])
 
         # Show table + default robot pose immediately while IsaacGym loads
         self._setup_table(table_urdf_abs)
 
         label = f"{_snake_to_title(cat_key)} / {self._dd_obj.value} / {self._dd_task.value}"
         self._md_status.content = f"**Status:** Loading *{label}* ..."
+        if self._pending_obstacles and self._worker_factory is None:
+            self._md_status.content += (
+                " (warning: obstacles are only simulated by the Isaac Sim backend)"
+            )
         self._md_task.content = f"**Task:** {label}"
 
         # Reset stats
@@ -714,7 +735,12 @@ class InteractiveDemo:
     # ── Scene update ───────────────────────────────────────────
 
     def _update_viz(self, state_tuple):
-        joint_pos, obj_pose, goal_pose = state_tuple
+        joint_pos, obj_pose, goal_pose = state_tuple[:3]
+        # Isaac Sim worker appends obstacle poses; the Isaac Gym worker does not.
+        obstacle_poses = state_tuple[3] if len(state_tuple) > 3 else []
+        for box, pose in zip(self._obstacle_boxes, obstacle_poses):
+            box.position = tuple(pose[:3])
+            box.wxyz = quat_xyzw_to_wxyz(pose[3:7])
         self.robot.update_cfg(joint_pos)
         if self._obj_frame is not None:
             self._obj_frame.position = tuple(obj_pose[:3])

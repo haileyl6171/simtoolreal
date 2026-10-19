@@ -192,6 +192,34 @@ def build_rigid_object_cfg(prim_path: str, usd_paths: list[str]) -> RigidObjectC
     )
 
 
+def yaw_quat_wxyz(yaw_deg: float) -> tuple[float, float, float, float]:
+    half = math.radians(yaw_deg) / 2.0
+    return (math.cos(half), 0.0, 0.0, math.sin(half))
+
+
+def build_obstacle_cfg(prim_path: str, ob) -> RigidObjectCfg:
+    """Spawn a dynamic cuboid obstacle (an ObstacleCfg) resting at its env-local pose."""
+    return RigidObjectCfg(
+        prim_path=prim_path,
+        spawn=sim_utils.CuboidCfg(
+            size=tuple(ob.size),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                kinematic_enabled=False, disable_gravity=False,
+                max_depenetration_velocity=1000.0,
+            ),
+            mass_props=sim_utils.MassPropertiesCfg(mass=float(ob.mass)),
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                static_friction=float(ob.friction), dynamic_friction=float(ob.friction),
+            ),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=tuple(ob.color)),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(
+            pos=tuple(ob.pos), rot=yaw_quat_wxyz(ob.yaw_deg),
+        ),
+    )
+
+
 def _log_scene_step(start_time: float, message: str) -> None:
     print(f"[scene_utils][+{time.perf_counter() - start_time:.2f}s] {message}", flush=True)
 
@@ -1801,7 +1829,13 @@ def setup_scene(env) -> None:
     env.table = RigidObject(build_rigid_object_cfg("/World/envs/env_.*/Table", table_usd_paths))
     env.object = RigidObject(build_rigid_object_cfg("/World/envs/env_.*/Object", object_usd_paths))
     env.goal_viz = RigidObject(build_rigid_object_cfg("/World/envs/env_.*/GoalViz", goalviz_usd_paths))
-    _log_scene_step(setup_t0, "spawned robot/table/object/goalviz")
+    env.obstacles = [
+        RigidObject(build_obstacle_cfg(f"/World/envs/env_.*/Obstacle_{i}", ob))
+        for i, ob in enumerate(assets_cfg.obstacles)
+    ]
+    _log_scene_step(
+        setup_t0, f"spawned robot/table/object/goalviz + {len(env.obstacles)} obstacles"
+    )
 
     # 5. Ground plane + dome light (global, outside env_*).
     spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
@@ -1816,6 +1850,8 @@ def setup_scene(env) -> None:
     env.scene.rigid_objects["table"] = env.table
     env.scene.rigid_objects["object"] = env.object
     env.scene.rigid_objects["goal_viz"] = env.goal_viz
+    for i, obstacle in enumerate(env.obstacles):
+        env.scene.rigid_objects[f"obstacle_{i}"] = obstacle
     hide_goal_viz_for_student_camera(env)
     setup_student_camera(env)
     _log_scene_step(setup_t0, "registered assets with scene")

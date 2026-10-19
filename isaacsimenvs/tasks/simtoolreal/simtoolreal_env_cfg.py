@@ -53,6 +53,28 @@ from isaaclab.utils import configclass
 
 
 @configclass
+class ObstacleCfg:
+    """A free-standing cuboid with its own physics (not part of the table)."""
+
+    size: tuple[float, float, float] = (0.04, 0.12, 0.05)
+    # Env-local centre at the default table_reset_z; shifted with the table's
+    # per-reset z so it always rests on the surface.
+    pos: tuple[float, float, float] = (0.0, 0.0, 0.555)
+    yaw_deg: float = 0.0
+    mass: float = 0.1
+    friction: float = 0.5
+    color: tuple[float, float, float] = (0.35, 0.35, 0.45)
+
+
+def obstacle_cfgs_from_trajectory(traj_data: dict) -> list[ObstacleCfg]:
+    """Read the optional ``obstacles`` list of a DexToolBench trajectory JSON."""
+    return [
+        ObstacleCfg(**{k: tuple(v) if isinstance(v, list) else v for k, v in ob.items()})
+        for ob in traj_data.get("obstacles", [])
+    ]
+
+
+@configclass
 class AssetsCfg:
     robot_urdf: str = (
         "assets/urdf/kuka_sharpa_description/iiwa14_left_sharpa_adjusted_restricted.urdf"
@@ -99,6 +121,9 @@ class AssetsCfg:
     finger_tip_friction: float = 1.5
     object_friction: float = 0.5
     table_friction: float = 0.5
+
+    # Free-standing obstacles spawned on the table (empty = none).
+    obstacles: list[ObstacleCfg] = []
 
 # ----------------------------------------------------------------------------
 # obs
@@ -565,6 +590,14 @@ class SimToolRealEnvCfg(DirectRLEnvCfg):
         lookat=(0.0, 0.4, 0.5),
         resolution=(640, 480),
     )
+    # Env-local eye/target for isaacsimenvs/play_video.py's recording camera
+    # (isaacsimenvs/utils/video_capture.py: attach_record_camera). Reuses the
+    # same framing as `viewer` above, which is already validated to frame the
+    # table/robot; `viewer` is world-frame while these are added to each env's
+    # origin, but for env_idx=0 under replicate_physics=False the two frames
+    # coincide.
+    record_camera_eye: tuple[float, float, float] = (0.5, -1.5, 1.2)
+    record_camera_target: tuple[float, float, float] = (0.0, 0.4, 0.5)
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         # Validated from-scratch training scale. Smaller counts must stay
         # divisible by the SAPG expl_coef_block_size (4096).

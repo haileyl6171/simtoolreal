@@ -12,7 +12,8 @@ DEXTOOLBENCH_DATA_STRUCTURE: Dict[str, Dict[str, List[str]]] = {
         "staples_marker": ["draw_smile", "write_c"],
     },
     "eraser": {
-        "flat_eraser": ["wipe_smile", "wipe_c", "clutter"],
+        "flat_eraser": ["wipe_smile", "wipe_c", "pick_place", "pick_place_obstacle",
+                        "pick_place_obstacle_2goal", "pick_place_obstacle_1goal"],
         "handle_eraser": ["wipe_smile", "wipe_c"],
     },
     "brush": {
