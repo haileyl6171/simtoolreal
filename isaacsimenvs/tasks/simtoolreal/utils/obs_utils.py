@@ -51,7 +51,19 @@ OBS_FIELD_SIZES: dict[str, int] = {
     "progress": 1,
     "successes": 1,
     "reward": 1,
+    # Obstacle 0 (critic-only, opt-in via ObsCfg.critic_obstacle_state).
+    "obstacle_pos": 3,
+    "obstacle_up": 3,
+    "obstacle_vel": 6,
+    "obstacle_knocked": 1,
 }
+
+OBSTACLE_STATE_FIELDS: tuple[str, ...] = (
+    "obstacle_pos",
+    "obstacle_up",
+    "obstacle_vel",
+    "obstacle_knocked",
+)
 
 
 def compute_obs_dim(field_list) -> int:
@@ -201,6 +213,15 @@ def compute_intermediate_values(env) -> None:
     )
     env._is_success = env._near_goal_steps >= term_cfg.success_steps
 
+    # Obstacle tilt = angle between body z-axis and world z: cos = 1 - 2 (qx^2 + qy^2).
+    if env.obstacles:
+        quats = torch.stack([ob.data.root_quat_w for ob in env.obstacles], dim=1)  # (N, M, 4) wxyz
+        cos = (1.0 - 2.0 * (quats[..., 1] ** 2 + quats[..., 2] ** 2)).clamp(-1.0, 1.0)
+        env._obstacle_tilt_deg = torch.rad2deg(torch.arccos(cos)).max(dim=-1).values
+        tipped = env._obstacle_tilt_deg > rew_cfg.obstacle_knock_tilt_deg
+        env._obstacle_just_knocked = tipped & ~env._obstacle_knocked
+        env._obstacle_knocked = env._obstacle_knocked | tipped
+
 
 # ----------------------------------------------------------------------------
 # Observation builder (Phase D)
@@ -226,6 +247,28 @@ def _apply_obs_delay(env, policy_tensor: torch.Tensor) -> torch.Tensor:
         env._obs_queue, policy_tensor, env, flush=_episode_start(env)
     )
     return delayed
+
+
+def _obstacle_obs(env) -> dict[str, torch.Tensor]:
+    """Obstacle 0 pose/vel + knocked flag (zeros when the scene has no obstacle)."""
+    n = env.num_envs
+    knocked = env._obstacle_knocked.float().unsqueeze(-1)
+    if not env.obstacles:
+        zeros = lambda d: torch.zeros(n, d, device=env.device)  # noqa: E731
+        return {
+            "obstacle_pos": zeros(3),
+            "obstacle_up": zeros(3),
+            "obstacle_vel": zeros(6),
+            "obstacle_knocked": knocked,
+        }
+    data = env.obstacles[0].data
+    z_axis = torch.tensor([0.0, 0.0, 1.0], device=env.device).expand(n, 3)
+    return {
+        "obstacle_pos": data.root_pos_w - env.scene.env_origins,
+        "obstacle_up": quat_apply(data.root_quat_w, z_axis),
+        "obstacle_vel": torch.cat([data.root_lin_vel_w, data.root_ang_vel_w], dim=-1),
+        "obstacle_knocked": knocked,
+    }
 
 
 def build_observations(env) -> dict[str, torch.Tensor]:
@@ -324,6 +367,7 @@ def build_observations(env) -> dict[str, torch.Tensor]:
         "progress": torch.log(env.episode_length_buf.float() / 10.0 + 1.0).unsqueeze(-1),
         "successes": torch.log(env._successes.float() + 1.0).unsqueeze(-1),
         "reward": (env.reward_buf * 0.01).unsqueeze(-1),
+        **_obstacle_obs(env),
     }
 
     obs_noisy = dict(obs_clean)
@@ -466,6 +510,7 @@ __all__ = [
     "NUM_KEYPOINTS",
     "KEYPOINT_CORNERS",
     "OBS_FIELD_SIZES",
+    "OBSTACLE_STATE_FIELDS",
     "compute_obs_dim",
     "compute_intermediate_values",
     "build_observations",

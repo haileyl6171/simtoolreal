@@ -171,6 +171,14 @@ def allocate_state_buffers(env) -> None:
     env._is_success = torch.zeros(
         env.num_envs, dtype=torch.bool, device=env.device
     )
+    # Obstacle knock-down state (max tilt over obstacles; latched per episode).
+    env._obstacle_tilt_deg = torch.zeros(env.num_envs, device=env.device)
+    env._obstacle_knocked = torch.zeros(
+        env.num_envs, dtype=torch.bool, device=env.device
+    )
+    env._obstacle_just_knocked = torch.zeros(
+        env.num_envs, dtype=torch.bool, device=env.device
+    )
 
     # --- Fixed-trajectory pool (trajectory_count ablation) ---
     # Loaded once at init from the JSON file. Different runs share the same
@@ -300,6 +308,10 @@ def _reset_object_pose(env, env_ids: torch.Tensor) -> None:
         fixed = torch.as_tensor(cfg.fixed_start_pose, device=env.device, dtype=torch.float32)
         pos_local = fixed[:3].unsqueeze(0).expand(n, -1)
         quat = fixed[3:].unsqueeze(0).expand(n, -1)
+        if cfg.fixed_start_pose_noise_xy > 0.0:
+            xy_noise = torch.empty(n, 2, device=env.device).uniform_(-1.0, 1.0)
+            pos_local = pos_local.clone()
+            pos_local[:, :2] += xy_noise * cfg.fixed_start_pose_noise_xy
     else:
         noise = torch.empty(n, 3, device=env.device).uniform_(-1.0, 1.0)
         pos_local = torch.stack(
@@ -427,6 +439,7 @@ def reset_env_state(env, env_ids: torch.Tensor) -> None:
             getattr(env, queue_name)[env_ids] = 0.0
     env._object_forces[env_ids] = 0.0
     env._object_torques[env_ids] = 0.0
+    env._obstacle_knocked[env_ids] = False
 
     dr = env.cfg.domain_randomization
     env._random_force_prob[env_ids] = sample_log_uniform(

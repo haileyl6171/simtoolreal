@@ -21,6 +21,8 @@ OBJECT_CATEGORY_TASK_TO_TABLE_URDF = {
     ("eraser", "pick_place_obstacle"): TABLE_URDF,
     ("eraser", "pick_place_obstacle_2goal"): TABLE_URDF,
     ("eraser", "pick_place_obstacle_1goal"): TABLE_URDF,
+    ("eraser", "pick_place_push"): TABLE_URDF,
+    ("eraser", "pick_place_push_noobstacle"): TABLE_URDF,
 }
 
 

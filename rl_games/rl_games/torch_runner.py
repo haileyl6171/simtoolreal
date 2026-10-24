@@ -25,8 +25,11 @@ def _restore(agent, args):
             weights = _load_checkpoint_weights(agent, args['checkpoint'])
             agent.set_weights(weights)
             if getattr(agent, 'has_central_value', False) and 'assymetric_vf_nets' in weights:
+                cv_weights = _pad_input_dim(
+                    weights['assymetric_vf_nets'], agent.central_value_net.state_dict()
+                )
                 try:
-                    agent.central_value_net.load_state_dict(weights['assymetric_vf_nets'])
+                    agent.central_value_net.load_state_dict(cv_weights)
                 except RuntimeError as exc:
                     print(f"Skipping central value checkpoint weights: {exc}")
             print(f"=> initialized model weights from '{args['checkpoint']}'")
@@ -42,6 +45,39 @@ def _load_checkpoint_weights(agent, checkpoint_path):
         if 0 in checkpoint:
             return checkpoint[0]
     return checkpoint
+
+def _pad_input_dim(old_sd, new_sd):
+    """Widen checkpoint tensors whose input dim grew (state fields appended to the obs).
+
+    The new fields sit right after the old obs, i.e. at index old_in (the old
+    running_mean length). That is the end of running_mean/var, but for SAPG
+    extra_param nets the first layer's input is [obs, extra_params], so the
+    new weight columns go before the extra-param columns. New entries are
+    zero (running_var: one), so the new inputs start out ignored. Any other
+    shape mismatch is left to load_state_dict.
+    """
+    mean_keys = [k for k in old_sd if k.endswith('running_mean_std.running_mean')]
+    if len(mean_keys) != 1:
+        return old_sd
+    old_in = old_sd[mean_keys[0]].shape[0]
+    padded = dict(old_sd)
+    for key, new in new_sd.items():
+        old = old_sd.get(key)
+        if old is None or old.shape == new.shape or old.dim() != new.dim():
+            continue
+        grown = [d for d in range(old.dim()) if old.shape[d] != new.shape[d]]
+        if len(grown) != 1 or not old_in <= old.shape[grown[0]] < new.shape[grown[0]]:
+            continue
+        d = grown[0]
+        n_new = new.shape[d] - old.shape[d]
+        fill = 1.0 if key.endswith('running_var') else 0.0
+        old = old.to(new.device, new.dtype)
+        head, tail = old.narrow(d, 0, old_in), old.narrow(d, old_in, old.shape[d] - old_in)
+        pad_shape = list(old.shape)
+        pad_shape[d] = n_new
+        padded[key] = torch.cat([head, torch.full(pad_shape, fill, dtype=new.dtype, device=new.device), tail], dim=d)
+        print(f"Padded central value weight {key}: {tuple(old.shape)} -> {tuple(new.shape)}")
+    return padded
 
 def _override_sigma(agent, args):
     if 'sigma' in args and args['sigma'] is not None:

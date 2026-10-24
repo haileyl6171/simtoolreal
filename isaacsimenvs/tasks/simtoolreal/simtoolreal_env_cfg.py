@@ -169,6 +169,10 @@ class ObsCfg:
 
     clamp_abs_observations: float = 10.0
 
+    # Append OBSTACLE_STATE_FIELDS (obstacle 0 pose/vel + knocked flag) to the
+    # critic's state_list at env init. Actor obs are unchanged.
+    critic_obstacle_state: bool = False
+
 
 # ----------------------------------------------------------------------------
 # student_obs
@@ -374,6 +378,11 @@ class RewardCfg:
     kuka_actions_penalty_scale: float = 0.03
     hand_actions_penalty_scale: float = 0.003
 
+    # An obstacle is "knocked" once its z-axis tilts past this (latched until
+    # episode reset). While knocked, reach-goal bonuses are withheld.
+    obstacle_knock_tilt_deg: float = 45.0
+    obstacle_knock_penalty: float = 0.0  # one-time, added (as -penalty) on the knock step
+
 
 # ----------------------------------------------------------------------------
 # reset (includes goal sampling — both fire on _reset_idx)
@@ -389,6 +398,8 @@ class ResetCfg:
     reset_position_noise_y: float = 0.1
     reset_position_noise_z: float = 0.02
     fixed_start_pose: tuple[float, float, float, float, float, float, float] | None = None
+    # Uniform +/- xy jitter (m) around ``fixed_start_pose`` (the noise above is ignored then).
+    fixed_start_pose_noise_xy: float = 0.0
 
     # Joint state noise on reset
     reset_dof_pos_random_interval_arm: float = 0.1
@@ -467,6 +478,8 @@ class TerminationCfg:
     tolerance_curriculum_increment: float = 0.9  # multiplicative per step
     tolerance_curriculum_interval: int = 3000  # env steps across all agents
     tolerance_curriculum_success_threshold: float = 3.0
+
+    terminate_on_obstacle_knock: bool = False
 
 
 # ----------------------------------------------------------------------------
@@ -616,6 +629,11 @@ class SimToolRealEnvCfg(DirectRLEnvCfg):
         replicate_physics=False,
         clone_in_fabric=False,
     )
+
+    # DexToolBench task "<category>/<object>/<task>" (e.g.
+    # "eraser/flat_eraser/pick_place_push"); applied at env init via
+    # dextoolbench.task_cfg.apply_dextoolbench_task. Empty = procedural training.
+    dextoolbench_task: str = ""
 
     # --- Sectioned sub-configs (mirror YAML sections 1:1) ---
     assets: AssetsCfg = AssetsCfg()

@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import tempfile
 from pathlib import Path
 
 from isaaclab.app import AppLauncher
@@ -29,21 +28,6 @@ from isaaclab.app import AppLauncher
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 CONTROL_HZ = 60.0
-
-TABLE_URDF = "assets/urdf/table_narrow.urdf"
-TABLE_WHITEBOARD_URDF = "assets/urdf/table_narrow_whiteboard.urdf"
-TABLE_NAIL_URDF = "assets/urdf/table_narrow_nail.urdf"
-TABLE_BOWL_PLATE_URDF = "assets/urdf/table_narrow_bowl_plate.urdf"
-
-OBJECT_CATEGORY_TO_TABLE_URDF = {
-    "hammer": TABLE_NAIL_URDF,
-    "spatula": TABLE_BOWL_PLATE_URDF,
-    "eraser": TABLE_WHITEBOARD_URDF,
-    "screwdriver": TABLE_URDF,
-    "marker": TABLE_WHITEBOARD_URDF,
-    "brush": TABLE_URDF,
-}
-
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
@@ -65,6 +49,12 @@ def _build_parser() -> argparse.ArgumentParser:
                         default=False,
                         help="Keep the training-time robot joint pos/vel reset noise so "
                              "episodes differ (object start pose and goals stay fixed).")
+    parser.add_argument("--episode_length_s", type=float, default=None,
+                        help="Per-goal timeout (s); resets on each goal reached. Default: env cfg (10 s).")
+    parser.add_argument("--no_obstacles", action="store_true",
+                        help="Drop the task's obstacles (control run with the same goals).")
+    parser.add_argument("--obstacle_tilt_threshold_deg", type=float, default=45.0,
+                        help="An obstacle counts as knocked down once its z-axis tilts past this.")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--rl_device", default="cuda")
     return parser
@@ -82,17 +72,6 @@ def _launch_app():
 _app, _args = _launch_app()
 
 
-def _write_isaac_trajectory(goals_xyzw: list[list[float]], out_dir: Path) -> str:
-    """Convert gym-format goals ([x,y,z,qx,qy,qz,qw] list) into the
-    fixed_trajectory_file format (pos (1,K,3), quat wxyz (1,K,4))."""
-    pos = [[g[:3] for g in goals_xyzw]]
-    quat_wxyz = [[[g[6], g[3], g[4], g[5]] for g in goals_xyzw]]
-    path = out_dir / "trajectory_isaac_format.json"
-    with open(path, "w") as f:
-        json.dump({"pos": pos, "quat_wxyz": quat_wxyz}, f)
-    return str(path)
-
-
 def main() -> None:
     args = _args
 
@@ -101,41 +80,21 @@ def main() -> None:
     import torch
 
     import isaacsimenvs  # noqa: F401  registers gym envs
-    from isaacsimenvs.tasks.simtoolreal.simtoolreal_env_cfg import (
-        SimToolRealEnvCfg,
-        obstacle_cfgs_from_trajectory,
-    )
+    from isaacsimenvs.tasks.simtoolreal.simtoolreal_env_cfg import SimToolRealEnvCfg
     from deployment.rl_player import RlPlayer
-    from dextoolbench.objects import NAME_TO_OBJECT
-
-    # --- Object + trajectory ---
-    obj = NAME_TO_OBJECT[args.object_name]
-    trajectory_path = (
-        REPO_ROOT / "dextoolbench/trajectories" / args.object_category
-        / args.object_name / f"{args.task_name}.json"
-    )
-    assert trajectory_path.exists(), f"Trajectory file not found: {trajectory_path}"
-    with open(trajectory_path) as f:
-        traj_data = json.load(f)
-    traj_data["start_pose"][2] += args.z_offset
-    traj_data["goals"] = traj_data["goals"][:: args.downsample_factor]
-    n_goals = len(traj_data["goals"])
-
-    tmp_dir = Path(tempfile.mkdtemp(prefix="dextoolbench_eval_"))
-    traj_file = _write_isaac_trajectory(traj_data["goals"], tmp_dir)
-
-    table_urdf = TABLE_URDF if args.force_table_urdf else (
-        OBJECT_CATEGORY_TO_TABLE_URDF[args.object_category]
-    )
+    from dextoolbench.task_cfg import apply_dextoolbench_task
 
     # --- Env config (mirrors dextoolbench/eval_isaacgym.py overrides) ---
     cfg = SimToolRealEnvCfg()
     cfg.scene.num_envs = 1
-
-    cfg.assets.object_urdf = str(obj.decomposed_urdf_path)
-    cfg.assets.object_scale = tuple(obj.scale)
-    cfg.assets.table_urdf = table_urdf
-    cfg.assets.obstacles = obstacle_cfgs_from_trajectory(traj_data)
+    traj_data = apply_dextoolbench_task(
+        cfg, args.object_category, args.object_name, args.task_name,
+        z_offset=args.z_offset,
+        downsample_factor=args.downsample_factor,
+        force_table_urdf=args.force_table_urdf,
+        obstacles=not args.no_obstacles,
+    )
+    n_goals = len(traj_data["goals"])
 
     rs = cfg.reset
     rs.reset_position_noise_x = 0.0
@@ -146,13 +105,8 @@ def main() -> None:
         rs.reset_dof_pos_random_interval_fingers = 0.0
         rs.reset_dof_vel_random_interval = 0.0
     cfg.seed = args.seed
-    rs.table_reset_z = 0.38
-    rs.table_reset_z_range = 0.0
-    rs.start_arm_higher = True
-    # gym start_pose is (x,y,z, qx,qy,qz,qw); cfg wants (x,y,z, qw,qx,qy,qz).
-    sp = traj_data["start_pose"]
-    rs.fixed_start_pose = (sp[0], sp[1], sp[2], sp[6], sp[3], sp[4], sp[5])
-    rs.fixed_trajectory_file = traj_file
+    # Same knock-down definition as the per-episode obstacle stats below.
+    cfg.reward.obstacle_knock_tilt_deg = args.obstacle_tilt_threshold_deg
 
     dr = cfg.domain_randomization
     dr.use_obs_delay = False
@@ -169,6 +123,9 @@ def main() -> None:
     term.eval_success_tolerance = 0.01
     term.success_steps = 1
     term.max_consecutive_successes = n_goals
+    if args.episode_length_s is not None:
+        term.episode_length = round(term.episode_length * args.episode_length_s / cfg.episode_length_s)
+        cfg.episode_length_s = args.episode_length_s
 
     env = gym.make("Isaacsimenvs-SimToolReal-Direct-v0", cfg=cfg)
     inner = env.unwrapped
@@ -186,6 +143,28 @@ def main() -> None:
 
     episode_goal_pcts: list[float] = []
     episode_lengths: list[int] = []
+    # Per-episode obstacle stats (obstacle 0 only; empty lists when the task has none).
+    obstacle = inner.obstacles[0] if getattr(inner, "obstacles", None) else None
+    obstacle_max_tilts: list[float] = []
+    obstacle_knocked_down: list[bool] = []
+    obstacle_knocked_at_goals: list[int | None] = []
+    obstacle_final_disp_xy: list[list[float]] = []
+    # Per-episode stall diagnostics for the first unreached goal.
+    stall_min_kp_dists: list[float | None] = []
+    final_object_pos: list[list[float]] = []
+    final_goal_pos: list[list[float]] = []
+
+    def local_pos(asset) -> np.ndarray:
+        return (asset.data.root_pos_w[0] - inner.scene.env_origins[0]).cpu().numpy()
+
+    def obstacle_tilt_deg() -> float:
+        # Angle between the body z-axis and world z: cos = 1 - 2 (qx^2 + qy^2).
+        q = obstacle.data.root_quat_w[0]
+        cos = (1.0 - 2.0 * (q[1] ** 2 + q[2] ** 2)).clamp(-1.0, 1.0)
+        return float(torch.rad2deg(torch.arccos(cos)).item())
+
+    def obstacle_xy_local() -> np.ndarray:
+        return (obstacle.data.root_pos_w[0, :2] - inner.scene.env_origins[0, :2]).cpu().numpy()
 
     for ep in range(args.num_episodes):
         player.player.init_rnn()
@@ -195,6 +174,9 @@ def main() -> None:
         obs, _, _, _, _ = env.step(torch.zeros((1, n_act), device=inner.device))
 
         step, done, goals_reached = 0, False, 0
+        max_tilt, knocked_at, last_xy = 0.0, None, None
+        cur_goal, min_kp_dist, obj_pos, goal_pos = 0, float("inf"), None, None
+        start_xy = obstacle_xy_local() if obstacle is not None else None
         # Loop on the env's own done signal only (matches eval_isaacgym.py and the
         # interactive worker). episode_length_s is a PER-GOAL timeout that the env
         # resets on each goal reached, so a multi-goal trajectory legitimately runs
@@ -211,18 +193,53 @@ def main() -> None:
                 goals_reached = max(goals_reached, int(inner._prev_episode_successes[0].item()))
             else:
                 goals_reached = max(goals_reached, int(inner._successes[0].item()))
+                # Closest approach (max keypoint distance) to the current goal.
+                if goals_reached != cur_goal:
+                    cur_goal, min_kp_dist = goals_reached, float("inf")
+                min_kp_dist = min(min_kp_dist, float(inner._keypoints_max_dist[0].item()))
+                obj_pos, goal_pos = local_pos(inner.object), local_pos(inner.goal_viz)
+                # Only sample the obstacle before the env auto-resets it.
+                if obstacle is not None:
+                    tilt = obstacle_tilt_deg()
+                    max_tilt = max(max_tilt, tilt)
+                    if knocked_at is None and tilt > args.obstacle_tilt_threshold_deg:
+                        knocked_at = goals_reached
+                    last_xy = obstacle_xy_local()
             step += 1
 
         goal_pct = 100.0 * goals_reached / n_goals
         episode_goal_pcts.append(goal_pct)
         episode_lengths.append(step)
-        print(f"[eval] episode {ep + 1}/{args.num_episodes}: "
-              f"{goals_reached}/{n_goals} goals ({goal_pct:.0f}%), "
-              f"{step / CONTROL_HZ:.1f}s")
+        msg = (f"[eval] episode {ep + 1}/{args.num_episodes}: "
+               f"{goals_reached}/{n_goals} goals ({goal_pct:.0f}%), "
+               f"{step / CONTROL_HZ:.1f}s")
+        stalled = goals_reached < n_goals and obj_pos is not None
+        stall_min_kp_dists.append(min_kp_dist if stalled else None)
+        final_object_pos.append([float(v) for v in obj_pos] if obj_pos is not None else [])
+        final_goal_pos.append([float(v) for v in goal_pos] if goal_pos is not None else [])
+        if stalled:
+            msg += (f", stalled on goal {goals_reached + 1}: closest kp dist {min_kp_dist:.3f}, "
+                    f"object-goal {np.round(obj_pos - goal_pos, 3).tolist()}")
+        if obstacle is not None:
+            disp = (last_xy - start_xy) if last_xy is not None else np.zeros(2)
+            obstacle_max_tilts.append(max_tilt)
+            obstacle_knocked_down.append(knocked_at is not None)
+            obstacle_knocked_at_goals.append(knocked_at)
+            obstacle_final_disp_xy.append([float(d) for d in disp])
+            msg += (f", obstacle max tilt {max_tilt:.0f}deg"
+                    + (f" (knocked down after {knocked_at} goals)" if knocked_at is not None else "")
+                    + f", moved dx={disp[0]:+.3f} dy={disp[1]:+.3f}")
+        print(msg)
 
     avg_goal_pct = float(np.mean(episode_goal_pcts))
     avg_time_sec = float(np.mean(episode_lengths) / CONTROL_HZ)
     print(f"[eval] DONE: avg_goal_pct={avg_goal_pct:.1f}, avg_time_sec={avg_time_sec:.1f}")
+    if obstacle_knocked_down:
+        knocked = np.array(obstacle_knocked_down)
+        pcts = np.array(episode_goal_pcts)
+        print(f"[eval] obstacle knocked down in {knocked.sum()}/{knocked.size} episodes; avg_goal_pct "
+              f"knocked={pcts[knocked].mean() if knocked.any() else float('nan'):.1f}, "
+              f"upright={pcts[~knocked].mean() if (~knocked).any() else float('nan'):.1f}")
 
     if args.output_dir is not None:
         output_dir = Path(args.output_dir)
@@ -234,6 +251,14 @@ def main() -> None:
                     "avg_time_sec": avg_time_sec,
                     "episode_goal_pcts": episode_goal_pcts,
                     "episode_lengths": episode_lengths,
+                    "obstacle_tilt_threshold_deg": args.obstacle_tilt_threshold_deg,
+                    "episode_obstacle_max_tilt_deg": obstacle_max_tilts,
+                    "episode_obstacle_knocked_down": obstacle_knocked_down,
+                    "episode_obstacle_knocked_at_goals": obstacle_knocked_at_goals,
+                    "episode_obstacle_final_disp_xy": obstacle_final_disp_xy,
+                    "episode_stall_min_kp_dist": stall_min_kp_dists,
+                    "episode_final_object_pos": final_object_pos,
+                    "episode_final_goal_pos": final_goal_pos,
                 },
                 f,
                 indent=4,

@@ -4,7 +4,8 @@ Writes, for the flat_eraser:
   dextoolbench/trajectories/eraser/flat_eraser/pick_place.json
   dextoolbench/trajectories/eraser/flat_eraser/pick_place_obstacle.json
   dextoolbench/trajectories/eraser/flat_eraser/pick_place_obstacle_{2goal,1goal}.json
-  assets/urdf/dextoolbench/environments/eraser/flat_eraser/{pick_place,pick_place_obstacle{,_2goal,_1goal}}.urdf
+  dextoolbench/trajectories/eraser/flat_eraser/pick_place_push{,_noobstacle}.json
+  assets/urdf/dextoolbench/environments/eraser/flat_eraser/{pick_place,pick_place_obstacle{,_2goal,_1goal},pick_place_push{,_noobstacle}}.urdf
 
 Both tasks share start pose and goals: prepick above the eraser, a
 "transfer" waypoint over the obstacle, then place beside it along x. The
@@ -18,7 +19,14 @@ by choosing the task.
 
 Usage:
   python3 dextoolbench/generate_pick_place_task.py [--gap 0.05] [--obstacle_size 0.04 0.12 0.05]
-      [--place_overlap 0.01]
+      [--place_overlap 0.01] [--push_obstacle_size 0.04 0.04 0.12] [--push_scene_shift 0.02]
+      [--push_shift 0.11] [--push_offset 0.15] [--push_clearance 0.08]
+
+pick_place_push is a separate probe of whether the low-level policy follows a
+hand-designed goal sequence: a tall, skinny box stands at the centre of the
+place footprint, and the goals lift the eraser, carry it high above the box to
+the right of the place pose, set it down there, then slide it left into the
+place pose so it shoves the box out of the footprint (toward -x).
       [--hand_margin 0.02] [--clearance 0.02]
 """
 
@@ -68,6 +76,18 @@ def main():
     parser.add_argument("--place_overlap", type=float, default=0.0,
                         help="shift the obstacle toward the place goal so it overlaps the place footprint "
                              "along x by this much (m); goals and transfer waypoint are unchanged")
+    parser.add_argument("--push_obstacle_size", type=float, nargs=3, default=[0.04, 0.04, 0.12],
+                        metavar=("SX", "SY", "SZ"), help="pick_place_push: tall obstacle box size (m)")
+    parser.add_argument("--push_scene_shift", type=float, default=0.02,
+                        help="pick_place_push: shift (m) of the whole scene (start, goals, box) toward -x")
+    parser.add_argument("--push_shift", type=float, default=0.11,
+                        help="pick_place_push: extra shift (m) of the place pose and box toward -x, "
+                             "leaving room on the right to come down clear of the box")
+    parser.add_argument("--push_offset", type=float, default=0.15,
+                        help="pick_place_push: +x shift (m) of the low-right goal from the place pose; "
+                             "the held body (with hand_margin) must land clear of the box")
+    parser.add_argument("--push_clearance", type=float, default=0.08,
+                        help="pick_place_push: height (m) of the high place waypoint above the box C-obstacle")
     parser.add_argument("--prepick_lift", type=float, default=0.15)
     parser.add_argument("--hand_margin", type=float, default=0.02,
                         help="inflation (m) of the eraser AABB on every side to cover the grasping hand")
@@ -121,11 +141,13 @@ def main():
     assert not cx_lo < pick_x < cx_hi and not cx_lo < place_x < cx_hi, \
         "hand_margin exceeds gap: pick/place footprint overlaps the C-space obstacle"
 
-    def segment_clearance(a, b):
+    def segment_clearance(a, b, cx_lo=cx_lo, cx_hi=cx_hi, cz_top=cz_top):
         """Min height (m) of a straight a->b origin path above the C-space obstacle top, over its x span."""
         lo, hi = max(min(a[0], b[0]), cx_lo), min(max(a[0], b[0]), cx_hi)
-        if lo >= hi:
+        if lo > hi or (lo == hi and a[0] != b[0]):
             return float("inf")
+        if a[0] == b[0]:  # vertical segment inside the x span
+            return min(a[2], b[2]) - cz_top
         z_at = lambda x: a[2] + (x - a[0]) / (b[0] - a[0]) * (b[2] - a[2])
         return min(z_at(lo), z_at(hi)) - cz_top
 
@@ -143,6 +165,39 @@ def main():
                        ("transfer->place", transfer, place)):
         print(f"  straight {name:22s} clearance over C-obstacle: {segment_clearance(a, b):+.4f} m")
 
+    # pick_place_push: tall box at the centre of the place footprint; the eraser
+    # lands right of it (low_right) and slides left into place, shoving it.
+    # The whole scene is shifted left by push_scene_shift to make room on the right.
+    px, py, pz = args.push_obstacle_size
+    push_top = TABLE_TOP_Z + pz
+    push_pick_x = pick_x - args.push_scene_shift
+    push_start = [push_pick_x, y, rest_z] + quat
+    push_prepick = [push_pick_x, y, prepick[2]] + quat
+    push_place_x = place_x - args.push_scene_shift - args.push_shift
+    push_x = push_place_x + (x_min + x_max) / 2
+    push_place = [push_place_x, y, rest_z] + quat
+    low_right = [push_place_x + args.push_offset, y, rest_z] + quat
+    # High place sits directly above low_right, so the eraser comes straight
+    # down beside the box rather than diagonally across it.
+    high_place = [low_right[0], y, max(push_top - (z_min - m) + args.push_clearance, prepick[2])] + quat
+    assert low_right[0] + x_min - m > push_x + px / 2, \
+        "push_offset too small: held body at the low-right goal overlaps the box"
+    assert push_pick_x + x_min > -TABLE_X_HALF, \
+        f"push start footprint reaches x={push_pick_x + x_min:.3f}, past the table edge {-TABLE_X_HALF}"
+    assert push_place_x + args.push_offset + x_max < TABLE_X_HALF, \
+        f"low-right footprint reaches x={push_place_x + args.push_offset + x_max:.3f}, past the table edge {TABLE_X_HALF}"
+    # C-space of the push box for the eraser origin (same construction as above).
+    push_cspace = dict(cx_lo=push_x - px / 2 - (x_max + m), cx_hi=push_x + px / 2 - (x_min - m),
+                       cz_top=push_top - (z_min - m))
+    push_obstacle = dict(obstacle, size=[px, py, pz], pos=[push_x, y, push_top - pz / 2])
+    print(f"push: box {px}x{py}x{pz} m at x={push_x:+.4f} (x [{push_x - px / 2:+.4f}, {push_x + px / 2:+.4f}], "
+          f"top z={push_top:.3f}); high place z={high_place[2]:.4f}; low right x={low_right[0]:+.4f} "
+          f"(eraser -x edge {low_right[0] + x_min:+.4f}, {low_right[0] + x_min - push_x - px / 2:.3f} m right of box); "
+          f"place x={push_place_x:+.4f}; start x={push_pick_x:+.4f}")
+    for name, a, b in (("prepick->high_place", push_prepick, high_place),
+                       ("high_place->low_right", high_place, low_right)):
+        print(f"  straight {name:22s} clearance over box C-obstacle: {segment_clearance(a, b, **push_cspace):+.4f} m")
+
     base = {"start_pose": start_pose, "goals": [prepick, transfer, place]}
     tasks = {
         "pick_place": base,
@@ -150,6 +205,10 @@ def main():
         # Same scene with shorter goal sequences: pick+place, and place only.
         "pick_place_obstacle_2goal": dict(base, goals=[prepick, place], obstacles=[obstacle]),
         "pick_place_obstacle_1goal": dict(base, goals=[place], obstacles=[obstacle]),
+        "pick_place_push": dict(start_pose=push_start, goals=[push_prepick, high_place, low_right, push_place],
+                                obstacles=[push_obstacle]),
+        # Control: same goal sequence, no box.
+        "pick_place_push_noobstacle": dict(start_pose=push_start, goals=[push_prepick, high_place, low_right, push_place]),
     }
     ENV_URDF_DIR.mkdir(parents=True, exist_ok=True)
     table_xml = PLAIN_TABLE_URDF.read_text()

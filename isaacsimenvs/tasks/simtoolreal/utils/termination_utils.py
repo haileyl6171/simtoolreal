@@ -61,12 +61,16 @@ def compute_terminations(env) -> tuple[torch.Tensor, torch.Tensor]:
 
     hand_far = env._curr_fingertip_distances.max(dim=-1).values > 1.5
 
+    knocked = env._obstacle_knocked
     terminated = fall | max_successes_reached | hand_far
+    if term_cfg.terminate_on_obstacle_knock:
+        terminated = terminated | knocked
     truncated = env.episode_length_buf >= env.max_episode_length
     env._termination_reasons = {
         "fall": fall,
         "max_successes": max_successes_reached,
         "hand_far": hand_far,
+        "obstacle_knocked": knocked,
         "timeout": truncated,
     }
     return terminated, truncated

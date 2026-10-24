@@ -14,6 +14,7 @@ from .simtoolreal_env_cfg import SimToolRealEnvCfg
 from .utils.action_utils import apply_action_pipeline, apply_wrench_dr
 from .utils.logging_utils import log_step_metrics
 from .utils.obs_utils import (
+    OBSTACLE_STATE_FIELDS,
     build_observations,
     build_student_observations,
     compute_intermediate_values,
@@ -34,6 +35,16 @@ class SimToolRealEnv(DirectRLEnv):
     def __init__(
         self, cfg: SimToolRealEnvCfg, render_mode: str | None = None, **kwargs
     ) -> None:
+        if cfg.dextoolbench_task:
+            from dextoolbench.task_cfg import apply_dextoolbench_task
+
+            category, object_name, task_name = cfg.dextoolbench_task.split("/")
+            apply_dextoolbench_task(cfg, category, object_name, task_name)
+        if cfg.obs.critic_obstacle_state:
+            # Appended so the existing critic columns keep their indices.
+            missing = [f for f in OBSTACLE_STATE_FIELDS if f not in cfg.obs.state_list]
+            cfg.obs.state_list = tuple(cfg.obs.state_list) + tuple(missing)
+
         # Override obs/state space from configured field lists before
         # DirectRLEnv / rl_games observes the configclass.
         cfg.observation_space = compute_obs_dim(cfg.obs.obs_list)

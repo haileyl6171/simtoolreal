@@ -138,7 +138,11 @@ def compute_rewards(env) -> torch.Tensor:
         force_consecutive=term_cfg.force_consecutive_near_goal_steps,
     )
 
-    reward = lift_rew + lift_bonus_rew + ft_rew + kp_rew + kuka_pen + hand_pen + bonus
+    # Knocked-over obstacle: withhold every remaining goal bonus this episode.
+    bonus = bonus * (~env._obstacle_knocked).float()
+    knock_pen = -rew_cfg.obstacle_knock_penalty * env._obstacle_just_knocked.float()
+
+    reward = lift_rew + lift_bonus_rew + ft_rew + kp_rew + kuka_pen + hand_pen + bonus + knock_pen
     env._reward_terms = {
         "fingertip_delta_rew": ft_rew,
         "lifting_rew": lift_rew,
@@ -147,6 +151,7 @@ def compute_rewards(env) -> torch.Tensor:
         "kuka_actions_penalty": kuka_pen,
         "hand_actions_penalty": hand_pen,
         "bonus_rew": bonus,
+        "obstacle_knock_penalty": knock_pen,
         "total_reward": reward,
     }
 

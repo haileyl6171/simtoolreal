@@ -13,7 +13,8 @@ DEXTOOLBENCH_DATA_STRUCTURE: Dict[str, Dict[str, List[str]]] = {
     },
     "eraser": {
         "flat_eraser": ["wipe_smile", "wipe_c", "pick_place", "pick_place_obstacle",
-                        "pick_place_obstacle_2goal", "pick_place_obstacle_1goal"],
+                        "pick_place_obstacle_2goal", "pick_place_obstacle_1goal",
+                        "pick_place_push", "pick_place_push_noobstacle"],
         "handle_eraser": ["wipe_smile", "wipe_c"],
     },
     "brush": {
