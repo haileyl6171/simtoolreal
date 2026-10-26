@@ -4,6 +4,7 @@ task object starts on the table and is placed onto a randomly cluttered shelf.
 Writes dextoolbench/trajectories/<category>/<object>/<task_name>.json with:
   start_pose  object start on the table (beside or in front of the cabinet)
   cabinet     cabinet geometry (dextoolbench/cabinet.py)
+  table_urdf  the table it stands on (table_narrow extended 5 cm toward the robot)
   object      the object's resting geometry (rest quat, origin height, AABB)
   clutter     clutter/ghost-goal sampling knobs (dextoolbench/clutter.py)
   goals       the 4 waypoints of one example layout (seed --layout_seed, env 0):
@@ -14,7 +15,7 @@ visualize_task.py --resample-clutter draws fresh layouts.
 
 Usage:
   python3.12 dextoolbench/generate_cabinet_task.py [--object_category eraser --object_name flat_eraser]
-      [--task_name cabinet_place] [--cabinet_pos 0.01 -0.10] [--cabinet_size 0.40 0.30 0.60]
+      [--task_name cabinet_place] [--cabinet_pos 0.01 -0.05] [--cabinet_size 0.40 0.30 0.60]
       [--num_shelves 1] [--num_slots 10] [--count_range 4 10] [--front_count_range 0 2]
       [--goal_levels 0 1] [--clutter_all_levels --clutter_levels 0 1]
 """
@@ -40,8 +41,9 @@ from dextoolbench.clutter import (  # noqa: E402
 
 TABLE_Z = 0.38  # table actor centre (tableResetZ)
 TABLE_TOP_Z = TABLE_Z + 0.15  # table box is 0.3 m tall
+TABLE_URDF = "assets/urdf/table_narrow_long.urdf"  # table_narrow extended 5 cm toward the robot
 TABLE_X_HALF = 0.2375
-TABLE_Y_HALF = 0.20
+TABLE_Y_RANGE = (-0.20, 0.25)
 
 
 def quat_to_matrix(qx, qy, qz, qw):
@@ -79,7 +81,7 @@ def main():
     parser.add_argument("--task_name", default="cabinet_place")
     parser.add_argument("--rest_pose_from", default="wipe_smile",
                         help="Existing task of this object whose start_pose gives the resting z/orientation.")
-    parser.add_argument("--cabinet_pos", type=float, nargs=2, default=[0.01, -0.10],
+    parser.add_argument("--cabinet_pos", type=float, nargs=2, default=[0.01, -0.05],
                         help="Cabinet centre x y (env-local); it stands on the table top.")
     parser.add_argument("--cabinet_yaw_deg", type=float, default=0.0)
     parser.add_argument("--cabinet_size", type=float, nargs=3, default=[0.40, 0.30, 0.60])
@@ -132,14 +134,14 @@ def main():
     cab_y_lo, cab_y_hi = args.cabinet_pos[1] - d / 2, args.cabinet_pos[1] + d / 2
     # The cabinet is kinematic, so overhanging the table edge is physically fine.
     overhang_x = max(-TABLE_X_HALF - cab_x_lo, cab_x_hi - TABLE_X_HALF)
-    overhang_y = abs(args.cabinet_pos[1]) + d / 2 - TABLE_Y_HALF
+    overhang_y = max(TABLE_Y_RANGE[0] - cab_y_lo, cab_y_hi - TABLE_Y_RANGE[1])
     if overhang_x > 1e-9 or overhang_y > 1e-9:
         print(f"WARNING: cabinet overhangs the table by x={max(overhang_x, 0):.3f} y={max(overhang_y, 0):.3f} m")
 
     # Start: on the table, clear of the cabinet footprint by start_gap.
     def footprint_ok(x, y):
         lo_x, hi_x, lo_y, hi_y = x + x_min, x + x_max, y + y_min, y + y_max
-        on_table = -TABLE_X_HALF < lo_x and hi_x < TABLE_X_HALF and -TABLE_Y_HALF < lo_y and hi_y < TABLE_Y_HALF
+        on_table = -TABLE_X_HALF < lo_x and hi_x < TABLE_X_HALF and TABLE_Y_RANGE[0] < lo_y and hi_y < TABLE_Y_RANGE[1]
         g = args.start_gap - 1e-9  # candidates sit exactly start_gap away
         clear = (hi_x < cab_x_lo - g or lo_x > cab_x_hi + g or hi_y < cab_y_lo - g or lo_y > cab_y_hi + g)
         return on_table and clear
@@ -200,7 +202,7 @@ def main():
     out = traj_dir / f"{args.task_name}.json"
     out.write_text(json.dumps(
         {"start_pose": start_pose, "goals": layout["waypoints"], "cabinet": cabinet,
-         "object": obj, "clutter": clutter},
+         "object": obj, "clutter": clutter, "table_urdf": TABLE_URDF},
         indent=4,
     ) + "\n")
     print(f"wrote {out.relative_to(REPO_ROOT)}")

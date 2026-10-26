@@ -1,6 +1,7 @@
 """Table URDF selection logic, shared between eval and visualize scripts."""
 
 TABLE_URDF = "urdf/table_narrow.urdf"
+TABLE_LONG_URDF = "urdf/table_narrow_long.urdf"  # +5 cm toward the robot (cabinet tasks)
 TABLE_WHITEBOARD_URDF = "urdf/table_narrow_whiteboard.urdf"
 TABLE_NAIL_URDF = "urdf/table_narrow_nail.urdf"
 TABLE_BOWL_PLATE_URDF = "urdf/table_narrow_bowl_plate.urdf"
@@ -23,6 +24,7 @@ OBJECT_CATEGORY_TASK_TO_TABLE_URDF = {
     ("eraser", "pick_place_obstacle_1goal"): TABLE_URDF,
     ("eraser", "pick_place_push"): TABLE_URDF,
     ("eraser", "pick_place_push_noobstacle"): TABLE_URDF,
+    ("eraser", "cabinet_place"): TABLE_LONG_URDF,
 }
 
 

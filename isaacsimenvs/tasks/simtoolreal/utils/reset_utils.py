@@ -7,7 +7,7 @@ from pathlib import Path
 
 import torch
 
-from isaaclab.utils.math import random_orientation
+from isaaclab.utils.math import quat_apply, quat_mul, random_orientation
 
 from .action_utils import sample_log_uniform
 from .goal_sampling import sample_absolute_goal_pose, sample_delta_goal_pose
@@ -275,6 +275,30 @@ def _reset_table_pose(env, env_ids: torch.Tensor) -> None:
 
     pose = torch.cat([pos_local + env_origins, quat], dim=-1)
     env.table.write_root_pose_to_sim(pose, env_ids=env_ids)
+    _reset_cabinet_pose(env, env_ids, pos_local + env_origins, quat)
+
+
+def _reset_cabinet_pose(env, env_ids, table_pos_w, table_quat) -> None:
+    """Rigidly attach the cabinet to the table: its cfg pose is relative to the
+    default (un-noised) table pose, so it follows table z/xy/yaw noise."""
+    if getattr(env, "cabinet", None) is None:
+        return
+    from .scene_utils import yaw_quat_wxyz
+
+    cab = env.cfg.assets.cabinet
+    n = env_ids.numel()
+    offset = torch.tensor(
+        [cab.pos[0], cab.pos[1], cab.pos[2] - env.cfg.reset.table_reset_z],
+        device=env.device, dtype=torch.float32,
+    ).repeat(n, 1)
+    cab_quat = torch.tensor(
+        yaw_quat_wxyz(cab.yaw_deg), device=env.device, dtype=torch.float32
+    ).repeat(n, 1)
+    table_quat = table_quat.contiguous().reshape(n, 4)
+    pose = torch.cat(
+        [table_pos_w + quat_apply(table_quat, offset), quat_mul(table_quat, cab_quat)], dim=-1
+    )
+    env.cabinet.write_root_pose_to_sim(pose, env_ids=env_ids)
 
 
 def _reset_obstacle_poses(env, env_ids: torch.Tensor) -> None:

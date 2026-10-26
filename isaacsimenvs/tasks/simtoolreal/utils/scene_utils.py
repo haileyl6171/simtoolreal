@@ -198,11 +198,21 @@ def yaw_quat_wxyz(yaw_deg: float) -> tuple[float, float, float, float]:
 
 
 def build_obstacle_cfg(prim_path: str, ob) -> RigidObjectCfg:
-    """Spawn a dynamic cuboid obstacle (an ObstacleCfg) resting at its env-local pose."""
+    """Spawn a dynamic primitive obstacle (an ObstacleCfg) resting at its env-local pose."""
+    if ob.shape == "box":
+        spawn_cls, geom = sim_utils.CuboidCfg, dict(size=tuple(ob.size))
+    elif ob.shape == "cylinder":
+        spawn_cls, geom = sim_utils.CylinderCfg, dict(
+            radius=float(ob.radius), height=float(ob.size[2]), axis="Z"
+        )
+    elif ob.shape == "sphere":
+        spawn_cls, geom = sim_utils.SphereCfg, dict(radius=float(ob.radius))
+    else:
+        raise ValueError(f"unknown obstacle shape {ob.shape!r}")
     return RigidObjectCfg(
         prim_path=prim_path,
-        spawn=sim_utils.CuboidCfg(
-            size=tuple(ob.size),
+        spawn=spawn_cls(
+            **geom,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 kinematic_enabled=False, disable_gravity=False,
                 max_depenetration_velocity=1000.0,
@@ -1634,12 +1644,14 @@ def apply_physx_material_properties(env) -> None:
 
     robot_view.set_material_properties(robot_materials, env_ids)
 
-    for name in ("table", "object", "goal_viz", "hole"):
-        if not hasattr(env, name):
+    for name in ("table", "object", "goal_viz", "hole", "cabinet"):
+        if getattr(env, name, None) is None:
             continue
         view = getattr(env, name).root_physx_view
         materials = view.get_material_properties()
         materials[:] = default
+        if name == "cabinet":
+            materials[:, :, 0:2] = float(assets_cfg.cabinet.friction)
         if name == "object" and obj_active:
             obj_base = float(assets_cfg.object_friction)
             bucket_vals = torch.linspace(obj_lo, obj_hi, n_buckets) * obj_base
@@ -1816,6 +1828,21 @@ def setup_scene(env) -> None:
             f"baked {len(table_usd_paths)} scaled table USD variants "
             f"x_range={scale_range_x} y_range={scale_range_y}",
         )
+    # Cabinet: URDF written from CabinetCfg (dextoolbench/cabinet.py), kinematic like the table.
+    cabinet_usd_path = None
+    if assets_cfg.cabinet is not None:
+        from dextoolbench.cabinet import write_cabinet_urdf
+
+        cabinet_urdf = write_cabinet_urdf(
+            assets_cfg.cabinet, Path(env._tmp_asset_dir) / "cabinet" / "cabinet.urdf"
+        )
+        cabinet_usd_path = _bake_usd(
+            _convert_urdf_to_usd(str(cabinet_urdf), usd_work_dir, fix_base=False),
+            bake_root, "cabinet",
+            props=dict(
+                kinematic_enabled=True, disable_gravity=True, articulation_enabled=False,
+            ),
+        )
     _log_scene_step(setup_t0, "resolved baked USDs")
 
     # 3. Pre-create env roots so regex spawns resolve to every env.
@@ -1833,6 +1860,10 @@ def setup_scene(env) -> None:
         RigidObject(build_obstacle_cfg(f"/World/envs/env_.*/Obstacle_{i}", ob))
         for i, ob in enumerate(assets_cfg.obstacles)
     ]
+    env.cabinet = (
+        RigidObject(build_rigid_object_cfg("/World/envs/env_.*/Cabinet", [cabinet_usd_path]))
+        if cabinet_usd_path is not None else None
+    )
     _log_scene_step(
         setup_t0, f"spawned robot/table/object/goalviz + {len(env.obstacles)} obstacles"
     )
@@ -1852,6 +1883,8 @@ def setup_scene(env) -> None:
     env.scene.rigid_objects["goal_viz"] = env.goal_viz
     for i, obstacle in enumerate(env.obstacles):
         env.scene.rigid_objects[f"obstacle_{i}"] = obstacle
+    if env.cabinet is not None:
+        env.scene.rigid_objects["cabinet"] = env.cabinet
     hide_goal_viz_for_student_camera(env)
     setup_student_camera(env)
     _log_scene_step(setup_t0, "registered assets with scene")

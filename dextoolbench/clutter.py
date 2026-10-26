@@ -40,7 +40,6 @@ CLUTTER_DEFAULTS = dict(
     shapes=(
         dict(kind="box", weight=2.0, size_x=(0.03, 0.09), size_y=(0.03, 0.09), height=(0.03, 0.20)),
         dict(kind="cylinder", weight=1.5, radius=(0.015, 0.04), height=(0.04, 0.20)),
-        dict(kind="sphere", weight=0.5, radius=(0.015, 0.035)),
     ),
     mass_range=(0.05, 0.4),
     friction_range=(0.4, 1.0),
@@ -351,3 +350,40 @@ def item_pose_env(cab, item: dict, placement: dict, surfaces=None):
     z = surfaces[placement["level"]]["z_top"] + item["height"] / 2
     pos = cabinet_to_env(cab, (placement["x"], placement["y"], z))
     return pos, placement["yaw"] + math.radians(cab["yaw_deg"])
+
+
+def layout_obstacles(cab, items: list[dict], layout: dict) -> list[dict]:
+    """Placed items as ``ObstacleCfg`` field dicts (env-local, at the default table z)."""
+    cab = cabinet_spec(cab)
+    surfaces = shelf_surfaces(cab)
+    out = []
+    for p in layout["placed"]:
+        it = items[p["slot"]]
+        pos, yaw = item_pose_env(cab, it, p, surfaces)
+        size = it["size"] if it["kind"] == "box" else (2 * it["radius"], 2 * it["radius"], it["height"])
+        out.append(dict(
+            shape=it["kind"], size=list(size), radius=0.0 if it["kind"] == "box" else it["radius"],
+            pos=list(pos), yaw_deg=math.degrees(yaw), mass=it["mass"], friction=it["friction"],
+            color=list(it["color"]),
+        ))
+    return out
+
+
+def sample_task_layout(traj_data: dict, rng: random.Random, env_index: int | None = None):
+    """Sample one episode for a cabinet task JSON: (layout, obstacle dicts).
+
+    The item pool is built as in ``generate_cabinet_task.py``; ``env_index``
+    (random if None) picks this env's items from it.
+    """
+    cab = cabinet_spec(traj_data["cabinet"])
+    clutter = clutter_spec(traj_data["clutter"])
+    obj = traj_data["object"]
+    surfaces = shelf_surfaces(cab)
+    caps = [front_height_cap(s, obj, clutter) for s in surfaces]
+    goal_caps = [caps[lv] for lv in clutter["goal_levels"] if lv < len(surfaces) and caps[lv] >= 0]
+    pool = sample_clutter_pool(clutter, min(goal_caps))
+    if env_index is None:
+        env_index = rng.randrange(clutter["pool_size"])
+    items = env_items(pool, env_index)
+    layout = sample_layout(cab, clutter, obj, items, traj_data["start_pose"], rng)
+    return layout, layout_obstacles(cab, items, layout)

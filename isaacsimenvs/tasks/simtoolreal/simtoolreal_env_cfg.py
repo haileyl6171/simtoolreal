@@ -54,9 +54,13 @@ from isaaclab.utils import configclass
 
 @configclass
 class ObstacleCfg:
-    """A free-standing cuboid with its own physics (not part of the table)."""
+    """A free-standing primitive with its own physics (not part of the table)."""
 
+    # "box" | "cylinder" (z-axis, upright) | "sphere"; cylinders/spheres use
+    # ``radius`` and ``size[2]`` as height (``size`` is their bbox).
+    shape: str = "box"
     size: tuple[float, float, float] = (0.04, 0.12, 0.05)
+    radius: float = 0.0
     # Env-local centre at the default table_reset_z; shifted with the table's
     # per-reset z so it always rests on the surface.
     pos: tuple[float, float, float] = (0.0, 0.0, 0.555)
@@ -64,6 +68,34 @@ class ObstacleCfg:
     mass: float = 0.1
     friction: float = 0.5
     color: tuple[float, float, float] = (0.35, 0.35, 0.45)
+
+
+@configclass
+class CabinetCfg:
+    """Open-front cabinet standing on the table (static; follows the table pose).
+
+    Geometry lives in ``dextoolbench/cabinet.py`` (shared with the viewers);
+    the fields and defaults mirror ``CABINET_DEFAULTS`` there.
+    """
+
+    # Env-local centre of the outer box at the default table_reset_z.
+    pos: tuple[float, float, float] = (0.10, -0.10, 0.71)
+    yaw_deg: float = 0.0
+    size: tuple[float, float, float] = (0.26, 0.20, 0.36)  # outer (x width, y depth, z height)
+    wall_thickness: float = 0.015
+    num_shelves: int = 1
+    # Shelf top heights above the cabinet's outer bottom; empty = evenly spaced.
+    shelf_heights: tuple[float, ...] = ()
+    color: tuple[float, float, float] = (0.55, 0.40, 0.28)
+    friction: float = 0.5
+
+
+def cabinet_cfg_from_trajectory(traj_data: dict) -> CabinetCfg | None:
+    """Read the optional ``cabinet`` block of a DexToolBench trajectory JSON."""
+    cab = traj_data.get("cabinet")
+    if cab is None:
+        return None
+    return CabinetCfg(**{k: tuple(v) if isinstance(v, list) else v for k, v in cab.items()})
 
 
 def obstacle_cfgs_from_trajectory(traj_data: dict) -> list[ObstacleCfg]:
@@ -124,6 +156,8 @@ class AssetsCfg:
 
     # Free-standing obstacles spawned on the table (empty = none).
     obstacles: list[ObstacleCfg] = []
+    # Static open-front cabinet on the table (None = no cabinet).
+    cabinet: CabinetCfg | None = None
 
 # ----------------------------------------------------------------------------
 # obs

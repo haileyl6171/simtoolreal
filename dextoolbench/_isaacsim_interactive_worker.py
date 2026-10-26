@@ -22,6 +22,39 @@ Z_OFFSET = 0.03
 CONTROL_DT = 1.0 / 60.0
 
 
+def _track_arm_limits(inner, stats):
+    """Accumulate per-arm-joint closest approach (rad) to the joint limits, for
+    the measured position and the commanded target, plus the deepest object y."""
+    q = inner.robot.data.joint_pos[0, inner._arm_joint_ids]
+    tgt = inner._cur_targets[0, inner._arm_joint_ids]
+    lo, hi = inner._arm_lower[0], inner._arm_upper[0]
+    for key, v in (("pos", q), ("target", tgt)):
+        m = torch_min(v - lo, hi - v)
+        prev = stats.get(key)
+        stats[key] = m if prev is None else torch_min(prev, m)
+    stats["near_steps"] = stats.get("near_steps", 0) + int((torch_min(q - lo, hi - q) < 0.05).any())
+    y = float(inner.object.data.root_pos_w[0, 1] - inner.scene.env_origins[0, 1])
+    stats["min_obj_y"] = min(stats.get("min_obj_y", y), y)
+
+
+def torch_min(a, b):
+    import torch
+
+    return torch.minimum(a, b)
+
+
+def _report_arm_limits(stats, steps):
+    import math
+
+    if "pos" not in stats:
+        return
+    fmt = lambda m: " ".join(f"j{i + 1}={math.degrees(v):.0f}" for i, v in enumerate(m.tolist()))  # noqa: E731
+    print(f"[limits] closest approach to arm joint limits (deg) over {steps} steps: "
+          f"pos [{fmt(stats['pos'])}] target [{fmt(stats['target'])}]; "
+          f"steps with a joint <3deg from its limit: {stats['near_steps']}; "
+          f"deepest object y {stats['min_obj_y']:+.3f}", flush=True)
+
+
 def _write_isaac_trajectory(goals_xyzw, out_dir: Path) -> str:
     """gym-format goals ([x,y,z,qx,qy,qz,qw] list) -> fixed_trajectory_file
     format (pos (1,K,3), quat wxyz (1,K,4))."""
@@ -61,6 +94,7 @@ def _sim_episode(conn, env, inner, player, n_act, n_goals, rl_device):
 
     import torch
 
+    limit_stats = {}
     player.player.init_rnn()
     obs, _ = env.reset()
     obs, _, _, _, _ = env.step(torch.zeros((1, n_act), device=inner.device))
@@ -86,6 +120,7 @@ def _sim_episode(conn, env, inner, player, n_act, n_goals, rl_device):
         t0 = time.time()
 
         state = _sim_get_state(inner, obs)
+        _track_arm_limits(inner, limit_stats)
         policy_obs = obs["policy"].to(rl_device)
         action = player.get_normalized_action(policy_obs, deterministic_actions=True)
         obs, _, terminated, truncated, _ = env.step(action.to(inner.device))
@@ -102,6 +137,7 @@ def _sim_episode(conn, env, inner, player, n_act, n_goals, rl_device):
         if (sleep := CONTROL_DT - elapsed) > 0:
             time.sleep(sleep)
 
+    _report_arm_limits(limit_stats, step)
     goal_pct = 100 * goals_reached / n_goals
     conn.send(("done", goal_pct, step))
 
@@ -125,6 +161,7 @@ def sim_worker_isaacsim(conn, category, object_name, task_name, table_urdf,
         import isaacsimenvs  # noqa: F401  registers gym envs
         from isaacsimenvs.tasks.simtoolreal.simtoolreal_env_cfg import (
             SimToolRealEnvCfg,
+            cabinet_cfg_from_trajectory,
             obstacle_cfgs_from_trajectory,
         )
         from deployment.rl_player import RlPlayer
@@ -139,6 +176,20 @@ def sim_worker_isaacsim(conn, category, object_name, task_name, table_urdf,
         )
         with open(traj_path) as f:
             traj_data = json.load(f)
+        if "clutter" in traj_data:
+            # Cabinet task: fresh clutter layout + ghost goal per load; the
+            # placed items become free-standing obstacles, its waypoints the goals.
+            import random
+
+            from dextoolbench.clutter import sample_task_layout
+
+            seed = int.from_bytes(os.urandom(4), "little")
+            layout, clutter_obstacles = sample_task_layout(traj_data, random.Random(seed))
+            traj_data["goals"] = layout["waypoints"]
+            traj_data["obstacles"] = traj_data.get("obstacles", []) + clutter_obstacles
+            print(f"[clutter] seed {seed}: goal level {layout['level']}, "
+                  f"{len(clutter_obstacles)} items ({layout['n_front']} in front), "
+                  f"carry z {layout['waypoints'][1][2]:.3f}", flush=True)
         traj_data["start_pose"][2] += Z_OFFSET
         n_goals = len(traj_data["goals"])
         tmp_dir = Path(tempfile.mkdtemp(prefix="dextoolbench_interactive_"))
@@ -153,6 +204,7 @@ def sim_worker_isaacsim(conn, category, object_name, task_name, table_urdf,
         # table_urdf arrives relative to assets/ (gym convention).
         cfg.assets.table_urdf = str(REPO_ROOT / "assets" / table_urdf)
         cfg.assets.obstacles = obstacle_cfgs_from_trajectory(traj_data)
+        cfg.assets.cabinet = cabinet_cfg_from_trajectory(traj_data)
 
         rs = cfg.reset
         rs.reset_position_noise_x = 0.0
@@ -206,7 +258,8 @@ def sim_worker_isaacsim(conn, category, object_name, task_name, table_urdf,
         obs, _, _, _, _ = env.step(torch.zeros((1, n_act), device=inner.device))
         init_state = _sim_get_state(inner, obs)
 
-        conn.send(("ready", init_state))
+        # Obstacle specs too, since cabinet tasks sample them here, not in the JSON.
+        conn.send(("ready", init_state, traj_data.get("obstacles", [])))
 
         while True:
             cmd = conn.recv()

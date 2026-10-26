@@ -1,4 +1,4 @@
-"""Apply a DexToolBench task (object + trajectory + obstacles) to a SimToolReal env cfg.
+"""Apply a DexToolBench task (object + trajectory + obstacles + cabinet) to a SimToolReal env cfg.
 
 Shared by ``dextoolbench/eval_isaacsim.py`` and training (``SimToolRealEnvCfg.
 dextoolbench_task``). Only sets what defines the task; eval-only overrides
@@ -57,9 +57,10 @@ def apply_dextoolbench_task(
     force_table_urdf: bool = True,
     obstacles: bool = True,
 ) -> dict:
-    """Set object/table/obstacles/start pose/goals on ``cfg``; returns the loaded trajectory."""
+    """Set object/table/obstacles/cabinet/start pose/goals on ``cfg``; returns the loaded trajectory."""
     from dextoolbench.objects import NAME_TO_OBJECT
     from isaacsimenvs.tasks.simtoolreal.simtoolreal_env_cfg import (
+        cabinet_cfg_from_trajectory,
         obstacle_cfgs_from_trajectory,
     )
 
@@ -73,7 +74,10 @@ def apply_dextoolbench_task(
     cfg.assets.table_urdf = TABLE_URDF if force_table_urdf else (
         OBJECT_CATEGORY_TO_TABLE_URDF[object_category]
     )
+    if "table_urdf" in traj_data:  # task-specific table (e.g. the cabinet tasks' longer one)
+        cfg.assets.table_urdf = traj_data["table_urdf"]
     cfg.assets.obstacles = obstacle_cfgs_from_trajectory(traj_data) if obstacles else []
+    cfg.assets.cabinet = cabinet_cfg_from_trajectory(traj_data)
 
     rs = cfg.reset
     rs.table_reset_z = 0.38

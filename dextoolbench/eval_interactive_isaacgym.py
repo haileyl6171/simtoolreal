@@ -28,6 +28,7 @@ import numpy as np
 import viser
 from viser.extras import ViserUrdf
 
+from dextoolbench.cabinet import cabinet_panels, cabinet_spec
 from dextoolbench.metadata import DEXTOOLBENCH_DATA_STRUCTURE, OBJECT_NAME_TO_CATEGORY
 
 # Pre-load the sidebar overview image as a numpy array (once, at import time)
@@ -128,6 +129,25 @@ CATEGORY_DESCRIPTIONS = {
     "marker": "Write shapes on a whiteboard.",
     "brush": "Sweep debris forward across the table.",
 }
+
+
+def cylinder_mesh(radius, height, n=24):
+    """Vertices/faces of a z-axis cylinder centred at the origin."""
+    a = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    ring = np.stack([radius * np.cos(a), radius * np.sin(a)], axis=-1)
+    verts = np.concatenate([
+        np.concatenate([ring, np.full((n, 1), -height / 2)], axis=-1),
+        np.concatenate([ring, np.full((n, 1), height / 2)], axis=-1),
+        [[0, 0, -height / 2], [0, 0, height / 2]],
+    ])
+    i = np.arange(n)
+    j = (i + 1) % n
+    faces = np.concatenate([
+        np.stack([i, j, n + j], -1), np.stack([i, n + j, n + i], -1),  # side
+        np.stack([np.full(n, 2 * n), j, i], -1),  # bottom
+        np.stack([np.full(n, 2 * n + 1), n + i, n + j], -1),  # top
+    ])
+    return verts.astype(np.float32), faces.astype(np.int32)
 
 
 def _snake_to_title(s: str) -> str:
@@ -620,12 +640,36 @@ class InteractiveDemo:
         # Free-standing obstacles: drawn at their start pose, moved by worker state.
         for i, ob in enumerate(self._pending_obstacles):
             half = np.deg2rad(ob.get("yaw_deg", 0.0)) / 2
-            box = self._add_box(
-                f"/obstacle_{i}", tuple(ob["size"]), tuple(ob["pos"]),
-                color=tuple(int(255 * c) for c in ob.get("color", (0.35, 0.35, 0.45))),
-            )
-            box.wxyz = (np.cos(half), 0.0, 0.0, np.sin(half))
-            self._obstacle_boxes.append(box)
+            color = tuple(int(255 * c) for c in ob.get("color", (0.35, 0.35, 0.45)))
+            shape = ob.get("shape", "box")
+            if shape == "box":
+                h = self._add_box(f"/obstacle_{i}", tuple(ob["size"]), tuple(ob["pos"]), color=color)
+            else:
+                if shape == "cylinder":
+                    v, f = cylinder_mesh(ob["radius"], ob["size"][2])
+                    h = self.server.scene.add_mesh_simple(
+                        f"/obstacle_{i}", vertices=v, faces=f, color=color, position=tuple(ob["pos"]),
+                    )
+                else:
+                    h = self.server.scene.add_icosphere(
+                        f"/obstacle_{i}", radius=ob["radius"], color=color, position=tuple(ob["pos"]),
+                    )
+                self._dyn.append(h)
+            h.wxyz = (np.cos(half), 0.0, 0.0, np.sin(half))
+            self._obstacle_boxes.append(h)
+
+    def _setup_cabinet(self, cab):
+        """Static cabinet panels (the cabinet follows the table, which is fixed here)."""
+        cab = cabinet_spec(cab)
+        half = np.deg2rad(cab["yaw_deg"]) / 2
+        frame = self.server.scene.add_frame(
+            "/cabinet", position=tuple(cab["pos"]),
+            wxyz=(np.cos(half), 0.0, 0.0, np.sin(half)), show_axes=False,
+        )
+        self._dyn.append(frame)
+        for name, center, size in cabinet_panels(cab):
+            self._add_box(f"/cabinet/{name}", tuple(size), tuple(center),
+                          color=tuple(int(255 * c) for c in cab["color"]))
 
     # ── Subprocess management ──────────────────────────────────
 
@@ -662,10 +706,14 @@ class InteractiveDemo:
         self._pending_obj_name = object_name
         traj_path = REPO_ROOT / "dextoolbench" / "trajectories" / cat_key / object_name / (task_name + ".json")
         with open(traj_path) as f:
-            self._pending_obstacles = json.load(f).get("obstacles", [])
+            traj_data = json.load(f)
+        # Cabinet tasks sample their clutter in the worker; it is sent with "ready".
+        self._pending_obstacles = traj_data.get("obstacles", [])
 
         # Show table + default robot pose immediately while IsaacGym loads
         self._setup_table(table_urdf_abs)
+        if "cabinet" in traj_data:
+            self._setup_cabinet(traj_data["cabinet"])
 
         label = f"{_snake_to_title(cat_key)} / {self._dd_obj.value} / {self._dd_task.value}"
         self._md_status.content = f"**Status:** Loading *{label}* ..."
@@ -756,6 +804,8 @@ class InteractiveDemo:
 
         if tag == "ready":
             init_state = msg[1]
+            if len(msg) > 2:  # Isaac Sim worker: the obstacles it actually spawned
+                self._pending_obstacles = msg[2]
             self._setup_object_goal(self._pending_obj_name)
             self._update_viz(init_state)
             self._env_ready = True
